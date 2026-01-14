@@ -17,7 +17,7 @@ print(test.head())
 
 test.to_csv('csv/EURUSD.csv') #Données de 2010 à 2025 stockées pour éviter de re-télécharger à chaque fois""" 
 
-data = pd.read_csv('../csv/EURUSD.csv')
+data = pd.read_csv('csv/EURUSD.csv')
 data['Date'] = pd.to_datetime(data['Date'])
 data['MA_15'] = data['Open'].rolling(window=15).mean()
 

@@ -1,50 +1,75 @@
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 
-window = 80 # Fenêtre pour la moyenne mobile
-jour_depart = 300 # Jour de départ pour la stratégie
-data = pd.read_csv('../csv/EURUSD.csv')
-pnl_list = []
+window = 80
+data = pd.read_csv("csv/EURUSD.csv")
+data["Date"] = pd.to_datetime(data["Date"])
+data = data.sort_values("Date").reset_index(drop=True)
 
-for t in range(jour_depart, len(data)-1):
-    X_window = data['Open'][t-window:t]
-    dX = X_window.diff()[1:].reset_index(drop=True)
-    X_lag = X_window.shift(1)[1:].reset_index(drop=True)
-    X_lag_const = sm.add_constant(X_lag)
-    model = sm.OLS(dX, X_lag_const)
-    results = model.fit()
-    beta_hat = results.params.iloc[1]
-    t_beta = results.tvalues.iloc[1]
-    alpha_hat = results.params.iloc[0]
+S = data["Close"].astype(float)  # closing exchange rate
+dates = data["Date"]
 
-    X_t = data['Open'].iloc[t]
-    pred = alpha_hat + beta_hat * X_t
-    if alpha_hat > 0 and beta_hat < 0 and t_beta < -1:
-        if pred > 0:
-            pnl = data['Open'].iloc[t+1] - data['Open'].iloc[t]
-        else:
-            pnl = data['Open'].iloc[t] - data['Open'].iloc[t+1]
+positions = []
+strategy_ret = []
+
+for t in range(window, len(S) - 1):
+    # estimation window: [t-window, ..., t-1]
+    X_win = S.iloc[t-window:t]
+
+    # model uses X and ΔX (many do this in log; keep in level if your course expects level)
+    X = np.log(X_win)
+    dX = X.diff().dropna()
+    X_lag = X.shift(1).dropna()
+
+    df = pd.concat([dX, X_lag], axis=1).dropna()
+    df.columns = ["dX", "X_lag"]
+
+    Xreg = sm.add_constant(df["X_lag"])
+    y = df["dX"]
+    res = sm.OLS(y, Xreg).fit()
+
+    alpha_hat = res.params["const"]
+    beta_hat = res.params["X_lag"]
+    t_beta = res.tvalues["X_lag"]
+
+    # expected change based on today's closing rate X_t
+    X_t = np.log(S.iloc[t])
+    pred_dX = alpha_hat + beta_hat * X_t
+
+    # trading rule
+    if (alpha_hat > 0) and (beta_hat < 0) and (t_beta < -1):
+        pos = 1 if pred_dX > 0 else -1
     else:
-        pnl = 0
-    pnl = pnl*sum(pnl_list) if pnl_list else 1  
-    pnl_list.append(pnl)
-    
-print(f"P&L total sur la période : {sum(pnl_list)}")
+        pos = 0
 
-# Convertir les dates en datetime si ce n'est pas déjà fait
-data['Date'] = pd.to_datetime(data['Date'])
+    # daily return (portfolio in USD), ignore transaction costs
+    r = pos * (S.iloc[t+1] / S.iloc[t] - 1)
 
-# Utiliser les dates correspondantes pour le plot
-dates = data['Date'].iloc[jour_depart:len(data)-1].reset_index(drop=True)
-pnl_cumsum = pd.Series(pnl_list, index=dates).cumsum()
+    positions.append(pos)
+    strategy_ret.append(r)
 
+strategy_ret = pd.Series(strategy_ret, index=dates.iloc[window:len(S)-1], name="ret")
+equity = (1 + strategy_ret).cumprod()  # start with 1 dollar
+
+# performance metrics
+sharpe = (strategy_ret.mean() / strategy_ret.std()) * np.sqrt(252) if strategy_ret.std() != 0 else np.nan
+running_max = equity.cummax()
+drawdown = equity / running_max - 1
+max_dd = drawdown.min()
+
+print(f"Final value from $1: {equity.iloc[-1]:.4f}")
+print(f"Sharpe (ann.): {sharpe:.3f}")
+print(f"Max drawdown: {max_dd:.2%}")
+print(f"% days invested: {(pd.Series(positions)!=0).mean():.2%}")
+
+# plot
 plt.figure(figsize=(12, 6))
-plt.plot(pnl_cumsum.index, pnl_cumsum.values)
-plt.plot(pnl_cumsum.index, data['Open'].iloc[jour_depart:len(data)-1], alpha=0.3, label='Prix EUR/USD')
-plt.title("PnL cumulatif de la stratégie")
+plt.plot(equity.index, equity.values, label="Strategy equity (start=1)")
+plt.title("Cumulative performance of mean-reversion strategy")
 plt.xlabel("Date")
-plt.ylabel("PnL")
-plt.xticks(rotation=45)
+plt.ylabel("Portfolio value ($)")
+plt.legend()
 plt.tight_layout()
 plt.show()
